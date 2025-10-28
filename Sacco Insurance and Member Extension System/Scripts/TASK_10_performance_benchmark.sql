@@ -1,3 +1,4 @@
+
 -- ============================================================================
 -- TASK 10: PERFORMANCE BENCHMARK AND REPORT
 -- ============================================================================
@@ -80,10 +81,99 @@ CREATE TABLE IF NOT EXISTS public.performance_benchmark (
 -- Disable parallel execution
 SET max_parallel_workers_per_gather = 0;
 
--- Enable timing
-\timing on
+-- Execute centralized query with SQL-based timing
+DO $$
+DECLARE
+    start_time TIMESTAMP;
+    end_time TIMESTAMP;
+    execution_time_ms DECIMAL(10, 2);
+BEGIN
+    start_time := clock_timestamp();
+    
+    -- Execute the query
+    PERFORM 
+        bs.Branch,
+        bs.MemberCount,
+        bs.BranchTotalLoans,
+        bs.BranchLoanVolume,
+        bs.BranchAvgRate,
+        bs.BranchTotalPolicies,
+        bs.BranchPremiumVolume,
+        json_agg(
+            json_build_object(
+                'Gender', ga.Gender,
+                'Count', ga.Count,
+                'AvgLoanAmount', ga.AvgLoanAmount,
+                'AvgPremium', ga.AvgPremium
+            )
+        ) AS GenderBreakdown
+    FROM (
+        SELECT 
+            Branch,
+            COUNT(*) AS MemberCount,
+            SUM(TotalLoans) AS BranchTotalLoans,
+            SUM(TotalLoanAmount) AS BranchLoanVolume,
+            AVG(AvgInterestRate) AS BranchAvgRate,
+            SUM(TotalPolicies) AS BranchTotalPolicies,
+            SUM(TotalPremium) AS BranchPremiumVolume
+        FROM (
+            SELECT 
+                m.MemberID,
+                m.FullName,
+                m.Branch,
+                m.Gender,
+                m.JoinDate,
+                COUNT(DISTINCT l.LoanID) AS TotalLoans,
+                COALESCE(SUM(l.Amount), 0) AS TotalLoanAmount,
+                COALESCE(AVG(l.InterestRate), 0) AS AvgInterestRate,
+                COUNT(DISTINCT p.PolicyID) AS TotalPolicies,
+                COALESCE(SUM(p.Premium), 0) AS TotalPremium
+            FROM centralized.Member m
+            LEFT JOIN centralized.LoanAccount l ON m.MemberID = l.MemberID
+            LEFT JOIN centralized.InsurancePolicy p ON m.MemberID = p.MemberID
+            GROUP BY m.MemberID, m.FullName, m.Branch, m.Gender, m.JoinDate
+        ) member_summary
+        GROUP BY Branch
+    ) bs
+    LEFT JOIN (
+        SELECT 
+            Branch,
+            Gender,
+            COUNT(*) AS Count,
+            AVG(TotalLoanAmount) AS AvgLoanAmount,
+            AVG(TotalPremium) AS AvgPremium
+        FROM (
+            SELECT 
+                m.MemberID,
+                m.Branch,
+                m.Gender,
+                COALESCE(SUM(l.Amount), 0) AS TotalLoanAmount,
+                COALESCE(SUM(p.Premium), 0) AS TotalPremium
+            FROM centralized.Member m
+            LEFT JOIN centralized.LoanAccount l ON m.MemberID = l.MemberID
+            LEFT JOIN centralized.InsurancePolicy p ON m.MemberID = p.MemberID
+            GROUP BY m.MemberID, m.Branch, m.Gender
+        ) member_summary
+        GROUP BY Branch, Gender
+    ) ga ON bs.Branch = ga.Branch
+    GROUP BY bs.Branch, bs.MemberCount, bs.BranchTotalLoans, bs.BranchLoanVolume, 
+             bs.BranchAvgRate, bs.BranchTotalPolicies, bs.BranchPremiumVolume
+    ORDER BY bs.Branch;
+    
+    end_time := clock_timestamp();
+    execution_time_ms := EXTRACT(EPOCH FROM (end_time - start_time)) * 1000;
+    
+    -- Record results
+    INSERT INTO public.performance_benchmark 
+    (QueryName, ExecutionMode, ExecutionTime_MS, TotalCost, RowsReturned, ParallelWorkers, Notes)
+    VALUES 
+    ('Comprehensive Analysis', 'Centralized', execution_time_ms, 456.78, 2, 0, 
+     'Serial execution on single centralized database');
+    
+    RAISE NOTICE 'Centralized Execution Time: % ms', execution_time_ms;
+END $$;
 
--- Execute centralized query
+-- Run EXPLAIN ANALYZE for detailed metrics
 EXPLAIN (ANALYZE, BUFFERS, TIMING, VERBOSE)
 WITH member_summary AS (
     SELECT 
@@ -145,14 +235,6 @@ LEFT JOIN gender_analysis ga ON bs.Branch = ga.Branch
 GROUP BY bs.Branch, bs.MemberCount, bs.BranchTotalLoans, bs.BranchLoanVolume, 
          bs.BranchAvgRate, bs.BranchTotalPolicies, bs.BranchPremiumVolume
 ORDER BY bs.Branch;
-
-\timing off
-
--- Record results (manually insert actual values from EXPLAIN ANALYZE output)
-INSERT INTO public.performance_benchmark 
-(QueryName, ExecutionMode, ExecutionTime_MS, TotalCost, RowsReturned, ParallelWorkers, Notes)
-VALUES 
-('Comprehensive Analysis', 'Centralized', 125.50, 456.78, 2, 0, 'Serial execution on single centralized database');
 
 -- ============================================================================
 -- TEST 2: PARALLEL EXECUTION (Parallel, Single Database)
@@ -169,9 +251,99 @@ ALTER TABLE centralized.Member SET (parallel_workers = 4);
 ALTER TABLE centralized.LoanAccount SET (parallel_workers = 4);
 ALTER TABLE centralized.InsurancePolicy SET (parallel_workers = 4);
 
-\timing on
+-- Execute parallel query with SQL-based timing
+DO $$
+DECLARE
+    start_time TIMESTAMP;
+    end_time TIMESTAMP;
+    execution_time_ms DECIMAL(10, 2);
+BEGIN
+    start_time := clock_timestamp();
+    
+    -- Execute the query
+    PERFORM 
+        bs.Branch,
+        bs.MemberCount,
+        bs.BranchTotalLoans,
+        bs.BranchLoanVolume,
+        bs.BranchAvgRate,
+        bs.BranchTotalPolicies,
+        bs.BranchPremiumVolume,
+        json_agg(
+            json_build_object(
+                'Gender', ga.Gender,
+                'Count', ga.Count,
+                'AvgLoanAmount', ga.AvgLoanAmount,
+                'AvgPremium', ga.AvgPremium
+            )
+        ) AS GenderBreakdown
+    FROM (
+        SELECT 
+            Branch,
+            COUNT(*) AS MemberCount,
+            SUM(TotalLoans) AS BranchTotalLoans,
+            SUM(TotalLoanAmount) AS BranchLoanVolume,
+            AVG(AvgInterestRate) AS BranchAvgRate,
+            SUM(TotalPolicies) AS BranchTotalPolicies,
+            SUM(TotalPremium) AS BranchPremiumVolume
+        FROM (
+            SELECT 
+                m.MemberID,
+                m.FullName,
+                m.Branch,
+                m.Gender,
+                m.JoinDate,
+                COUNT(DISTINCT l.LoanID) AS TotalLoans,
+                COALESCE(SUM(l.Amount), 0) AS TotalLoanAmount,
+                COALESCE(AVG(l.InterestRate), 0) AS AvgInterestRate,
+                COUNT(DISTINCT p.PolicyID) AS TotalPolicies,
+                COALESCE(SUM(p.Premium), 0) AS TotalPremium
+            FROM centralized.Member m
+            LEFT JOIN centralized.LoanAccount l ON m.MemberID = l.MemberID
+            LEFT JOIN centralized.InsurancePolicy p ON m.MemberID = p.MemberID
+            GROUP BY m.MemberID, m.FullName, m.Branch, m.Gender, m.JoinDate
+        ) member_summary
+        GROUP BY Branch
+    ) bs
+    LEFT JOIN (
+        SELECT 
+            Branch,
+            Gender,
+            COUNT(*) AS Count,
+            AVG(TotalLoanAmount) AS AvgLoanAmount,
+            AVG(TotalPremium) AS AvgPremium
+        FROM (
+            SELECT 
+                m.MemberID,
+                m.Branch,
+                m.Gender,
+                COALESCE(SUM(l.Amount), 0) AS TotalLoanAmount,
+                COALESCE(SUM(p.Premium), 0) AS TotalPremium
+            FROM centralized.Member m
+            LEFT JOIN centralized.LoanAccount l ON m.MemberID = l.MemberID
+            LEFT JOIN centralized.InsurancePolicy p ON m.MemberID = p.MemberID
+            GROUP BY m.MemberID, m.Branch, m.Gender
+        ) member_summary
+        GROUP BY Branch, Gender
+    ) ga ON bs.Branch = ga.Branch
+    GROUP BY bs.Branch, bs.MemberCount, bs.BranchTotalLoans, bs.BranchLoanVolume, 
+             bs.BranchAvgRate, bs.BranchTotalPolicies, bs.BranchPremiumVolume
+    ORDER BY bs.Branch;
+    
+    end_time := clock_timestamp();
+    execution_time_ms := EXTRACT(EPOCH FROM (end_time - start_time)) * 1000;
+    
+    -- Record results
+    INSERT INTO public.performance_benchmark 
+    (QueryName, ExecutionMode, ExecutionTime_MS, TotalCost, RowsReturned, ParallelWorkers, Notes)
+    VALUES 
+    ('Comprehensive Analysis', 'Parallel', execution_time_ms, 234.56, 2, 4, 
+     'Parallel execution with 4 workers');
+    
+    RAISE NOTICE 'Parallel Execution Time: % ms', execution_time_ms;
+END $$;
 
--- Execute parallel query (same query as above)
+-- Run EXPLAIN ANALYZE for detailed metrics
 EXPLAIN (ANALYZE, BUFFERS, TIMING, VERBOSE)
 WITH member_summary AS (
     SELECT 
@@ -234,14 +406,6 @@ GROUP BY bs.Branch, bs.MemberCount, bs.BranchTotalLoans, bs.BranchLoanVolume,
          bs.BranchAvgRate, bs.BranchTotalPolicies, bs.BranchPremiumVolume
 ORDER BY bs.Branch;
 
-\timing off
-
--- Record results
-INSERT INTO public.performance_benchmark 
-(QueryName, ExecutionMode, ExecutionTime_MS, TotalCost, RowsReturned, ParallelWorkers, Notes)
-VALUES 
-('Comprehensive Analysis', 'Parallel', 45.30, 234.56, 2, 4, 'Parallel execution with 4 workers');
-
 -- ============================================================================
 -- TEST 3: DISTRIBUTED EXECUTION (Across Multiple Schemas)
 -- ============================================================================
@@ -249,9 +413,134 @@ VALUES
 -- Reset parallel settings
 SET max_parallel_workers_per_gather = 0;
 
-\timing on
+-- Execute distributed query with SQL-based timing
+DO $$
+DECLARE
+    start_time TIMESTAMP;
+    end_time TIMESTAMP;
+    execution_time_ms DECIMAL(10, 2);
+BEGIN
+    start_time := clock_timestamp();
+    
+    -- Execute the query
+    PERFORM 
+        bs.Branch,
+        bs.MemberCount,
+        bs.BranchTotalLoans,
+        bs.BranchLoanVolume,
+        bs.BranchAvgRate,
+        bs.BranchTotalPolicies,
+        bs.BranchPremiumVolume,
+        json_agg(
+            json_build_object(
+                'Gender', ga.Gender,
+                'Count', ga.Count,
+                'AvgLoanAmount', ga.AvgLoanAmount,
+                'AvgPremium', ga.AvgPremium
+            )
+        ) AS GenderBreakdown
+    FROM (
+        SELECT 
+            Branch,
+            COUNT(*) AS MemberCount,
+            SUM(TotalLoans) AS BranchTotalLoans,
+            SUM(TotalLoanAmount) AS BranchLoanVolume,
+            AVG(AvgInterestRate) AS BranchAvgRate,
+            SUM(TotalPolicies) AS BranchTotalPolicies,
+            SUM(TotalPremium) AS BranchPremiumVolume
+        FROM (
+            -- Kigali branch data
+            SELECT 
+                m.MemberID,
+                m.FullName,
+                m.Branch,
+                m.Gender,
+                m.JoinDate,
+                COUNT(DISTINCT l.LoanID) AS TotalLoans,
+                COALESCE(SUM(l.Amount), 0) AS TotalLoanAmount,
+                COALESCE(AVG(l.InterestRate), 0) AS AvgInterestRate,
+                COUNT(DISTINCT p.PolicyID) AS TotalPolicies,
+                COALESCE(SUM(p.Premium), 0) AS TotalPremium
+            FROM branch_kigali.Member m
+            LEFT JOIN branch_kigali.LoanAccount l ON m.MemberID = l.MemberID
+            LEFT JOIN branch_kigali.InsurancePolicy p ON m.MemberID = p.MemberID
+            GROUP BY m.MemberID, m.FullName, m.Branch, m.Gender, m.JoinDate
+            
+            UNION ALL
+            
+            -- Musanze branch data
+            SELECT 
+                m.MemberID,
+                m.FullName,
+                m.Branch,
+                m.Gender,
+                m.JoinDate,
+                COUNT(DISTINCT l.LoanID) AS TotalLoans,
+                COALESCE(SUM(l.Amount), 0) AS TotalLoanAmount,
+                COALESCE(AVG(l.InterestRate), 0) AS AvgInterestRate,
+                COUNT(DISTINCT p.PolicyID) AS TotalPolicies,
+                COALESCE(SUM(p.Premium), 0) AS TotalPremium
+            FROM branch_musanze.Member m
+            LEFT JOIN branch_musanze.LoanAccount l ON m.MemberID = l.MemberID
+            LEFT JOIN branch_musanze.InsurancePolicy p ON m.MemberID = p.MemberID
+            GROUP BY m.MemberID, m.FullName, m.Branch, m.Gender, m.JoinDate
+        ) member_summary
+        GROUP BY Branch
+    ) bs
+    LEFT JOIN (
+        SELECT 
+            Branch,
+            Gender,
+            COUNT(*) AS Count,
+            AVG(TotalLoanAmount) AS AvgLoanAmount,
+            AVG(TotalPremium) AS AvgPremium
+        FROM (
+            -- Kigali branch data
+            SELECT 
+                m.MemberID,
+                m.Branch,
+                m.Gender,
+                COALESCE(SUM(l.Amount), 0) AS TotalLoanAmount,
+                COALESCE(SUM(p.Premium), 0) AS TotalPremium
+            FROM branch_kigali.Member m
+            LEFT JOIN branch_kigali.LoanAccount l ON m.MemberID = l.MemberID
+            LEFT JOIN branch_kigali.InsurancePolicy p ON m.MemberID = p.MemberID
+            GROUP BY m.MemberID, m.Branch, m.Gender
+            
+            UNION ALL
+            
+            -- Musanze branch data
+            SELECT 
+                m.MemberID,
+                m.Branch,
+                m.Gender,
+                COALESCE(SUM(l.Amount), 0) AS TotalLoanAmount,
+                COALESCE(SUM(p.Premium), 0) AS TotalPremium
+            FROM branch_musanze.Member m
+            LEFT JOIN branch_musanze.LoanAccount l ON m.MemberID = l.MemberID
+            LEFT JOIN branch_musanze.InsurancePolicy p ON m.MemberID = p.MemberID
+            GROUP BY m.MemberID, m.Branch, m.Gender
+        ) member_summary
+        GROUP BY Branch, Gender
+    ) ga ON bs.Branch = ga.Branch
+    GROUP BY bs.Branch, bs.MemberCount, bs.BranchTotalLoans, bs.BranchLoanVolume, 
+             bs.BranchAvgRate, bs.BranchTotalPolicies, bs.BranchPremiumVolume
+    ORDER BY bs.Branch;
+    
+    end_time := clock_timestamp();
+    execution_time_ms := EXTRACT(EPOCH FROM (end_time - start_time)) * 1000;
+    
+    -- Record results
+    INSERT INTO public.performance_benchmark 
+    (QueryName, ExecutionMode, ExecutionTime_MS, TotalCost, RowsReturned, ParallelWorkers, Notes)
+    VALUES 
+    ('Comprehensive Analysis', 'Distributed', execution_time_ms, 345.67, 2, 0, 
+     'Distributed execution across branch schemas');
+    
+    RAISE NOTICE 'Distributed Execution Time: % ms', execution_time_ms;
+END $$;
 
--- Execute distributed query
+-- Run EXPLAIN ANALYZE for detailed metrics
 EXPLAIN (ANALYZE, BUFFERS, TIMING, VERBOSE)
 WITH member_summary AS (
     -- Kigali branch data
@@ -334,36 +623,267 @@ GROUP BY bs.Branch, bs.MemberCount, bs.BranchTotalLoans, bs.BranchLoanVolume,
          bs.BranchAvgRate, bs.BranchTotalPolicies, bs.BranchPremiumVolume
 ORDER BY bs.Branch;
 
-\timing off
-
--- Record results
-INSERT INTO public.performance_benchmark 
-(QueryName, ExecutionMode, ExecutionTime_MS, TotalCost, RowsReturned, ParallelWorkers, Notes)
-VALUES 
-('Comprehensive Analysis', 'Distributed', 78.90, 345.67, 2, 0, 'Distributed execution across branch schemas');
-
 -- ============================================================================
 -- STEP 4: Additional benchmark queries
 -- ============================================================================
 
 -- Benchmark Query 2: Simple aggregation
--- Centralized
+-- Centralized with SQL-based timing
 SET max_parallel_workers_per_gather = 0;
-\timing on
+
+DO $$
+DECLARE
+    start_time TIMESTAMP;
+    end_time TIMESTAMP;
+    execution_time_ms DECIMAL(10, 2);
+BEGIN
+    start_time := clock_timestamp();
+    
+    PERFORM Branch, COUNT(*), SUM(Amount) 
+    FROM centralized.LoanAccount 
+    GROUP BY Branch;
+    
+    end_time := clock_timestamp();
+    execution_time_ms := EXTRACT(EPOCH FROM (end_time - start_time)) * 1000;
+    
+    INSERT INTO public.performance_benchmark 
+    (QueryName, ExecutionMode, ExecutionTime_MS, ParallelWorkers, Notes)
+    VALUES 
+    ('Simple Aggregation', 'Centralized', execution_time_ms, 0, 'Simple GROUP BY query');
+    
+    RAISE NOTICE 'Centralized Simple Aggregation: % ms', execution_time_ms;
+END $$;
+
 EXPLAIN (ANALYZE, BUFFERS)
 SELECT Branch, COUNT(*), SUM(Amount) FROM centralized.LoanAccount GROUP BY Branch;
-\timing off
 
--- Parallel
+-- Parallel with SQL-based timing
 SET max_parallel_workers_per_gather = 4;
-\timing on
+
+DO $$
+DECLARE
+    start_time TIMESTAMP;
+    end_time TIMESTAMP;
+    execution_time_ms DECIMAL(10, 2);
+BEGIN
+    start_time := clock_timestamp();
+    
+    PERFORM Branch, COUNT(*), SUM(Amount) 
+    FROM centralized.LoanAccount 
+    GROUP BY Branch;
+    
+    end_time := clock_timestamp();
+    execution_time_ms := EXTRACT(EPOCH FROM (end_time - start_time)) * 1000;
+    
+    INSERT INTO public.performance_benchmark 
+    (QueryName, ExecutionMode, ExecutionTime_MS, ParallelWorkers, Notes)
+    VALUES 
+    ('Simple Aggregation', 'Parallel', execution_time_ms, 4, 'Parallel GROUP BY query');
+    
+    RAISE NOTICE 'Parallel Simple Aggregation: % ms', execution_time_ms;
+END $$;
+
 EXPLAIN (ANALYZE, BUFFERS)
 SELECT Branch, COUNT(*), SUM(Amount) FROM centralized.LoanAccount GROUP BY Branch;
-\timing off
 
--- Distributed
+--00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+
+-- Branch insertion
+
+--0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+
+-- ============================================================================
+-- SIMPLE AGGREGATION BENCHMARK - CORRECTED VERSION
+-- ============================================================================
+-- Purpose: Compare serial vs parallel vs distributed execution for loan aggregation
+-- Fix: Join LoanAccount with Member to get Branch information
+-- ============================================================================
+
+-- ============================================================================
+-- Benchmark Query: Loan aggregation by branch
+-- ============================================================================
+
+-- ============================================================================
+-- TEST 1: CENTRALIZED EXECUTION (Serial)
+-- ============================================================================
+
 SET max_parallel_workers_per_gather = 0;
-\timing on
+
+DO $$
+DECLARE
+    start_time TIMESTAMP;
+    end_time TIMESTAMP;
+    execution_time_ms DECIMAL(10, 2);
+BEGIN
+    start_time := clock_timestamp();
+    
+    -- Fixed query to join with Member table to get Branch
+    PERFORM m.Branch, COUNT(*) AS LoanCount, SUM(l.Amount) AS TotalAmount
+    FROM centralized.LoanAccount l
+    INNER JOIN centralized.Member m ON l.MemberID = m.MemberID
+    GROUP BY m.Branch;
+    
+    end_time := clock_timestamp();
+    execution_time_ms := EXTRACT(EPOCH FROM (end_time - start_time)) * 1000;
+    
+    INSERT INTO public.performance_benchmark 
+    (QueryName, ExecutionMode, ExecutionTime_MS, ParallelWorkers, Notes)
+    VALUES 
+    ('Simple Aggregation', 'Centralized', execution_time_ms, 0, 'Simple GROUP BY query with JOIN');
+    
+    RAISE NOTICE 'Centralized Simple Aggregation: % ms', execution_time_ms;
+END $$;
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT m.Branch, COUNT(*) AS LoanCount, SUM(l.Amount) AS TotalAmount
+FROM centralized.LoanAccount l
+INNER JOIN centralized.Member m ON l.MemberID = m.MemberID
+GROUP BY m.Branch;
+
+-- ============================================================================
+-- TEST 2: PARALLEL EXECUTION
+-- ============================================================================
+
+SET max_parallel_workers_per_gather = 4;
+
+DO $$
+DECLARE
+    start_time TIMESTAMP;
+    end_time TIMESTAMP;
+    execution_time_ms DECIMAL(10, 2);
+BEGIN
+    start_time := clock_timestamp();
+    
+    -- Fixed query to join with Member table to get Branch
+    PERFORM m.Branch, COUNT(*) AS LoanCount, SUM(l.Amount) AS TotalAmount
+    FROM centralized.LoanAccount l
+    INNER JOIN centralized.Member m ON l.MemberID = m.MemberID
+    GROUP BY m.Branch;
+    
+    end_time := clock_timestamp();
+    execution_time_ms := EXTRACT(EPOCH FROM (end_time - start_time)) * 1000;
+    
+    INSERT INTO public.performance_benchmark 
+    (QueryName, ExecutionMode, ExecutionTime_MS, ParallelWorkers, Notes)
+    VALUES 
+    ('Simple Aggregation', 'Parallel', execution_time_ms, 4, 'Parallel GROUP BY query with JOIN');
+    
+    RAISE NOTICE 'Parallel Simple Aggregation: % ms', execution_time_ms;
+END $$;
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT m.Branch, COUNT(*) AS LoanCount, SUM(l.Amount) AS TotalAmount
+FROM centralized.LoanAccount l
+INNER JOIN centralized.Member m ON l.MemberID = m.MemberID
+GROUP BY m.Branch;
+
+-- ============================================================================
+-- TEST 3: DISTRIBUTED EXECUTION
+-- ============================================================================
+
+SET max_parallel_workers_per_gather = 0;
+
+DO $$
+DECLARE
+    start_time TIMESTAMP;
+    end_time TIMESTAMP;
+    execution_time_ms DECIMAL(10, 2);
+BEGIN
+    start_time := clock_timestamp();
+    
+    -- Fixed distributed query - Branch is already known per schema
+    PERFORM Branch, COUNT(*) AS LoanCount, SUM(Amount) AS TotalAmount
+    FROM (
+        SELECT 'Kigali' AS Branch, l.Amount 
+        FROM branch_kigali.LoanAccount l
+        UNION ALL
+        SELECT 'Musanze' AS Branch, l.Amount 
+        FROM branch_musanze.LoanAccount l
+    ) AS all_loans
+    GROUP BY Branch;
+    
+    end_time := clock_timestamp();
+    execution_time_ms := EXTRACT(EPOCH FROM (end_time - start_time)) * 1000;
+    
+    INSERT INTO public.performance_benchmark 
+    (QueryName, ExecutionMode, ExecutionTime_MS, ParallelWorkers, Notes)
+    VALUES 
+    ('Simple Aggregation', 'Distributed', execution_time_ms, 0, 'Distributed GROUP BY query');
+    
+    RAISE NOTICE 'Distributed Simple Aggregation: % ms', execution_time_ms;
+END $$;
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT Branch, COUNT(*) AS LoanCount, SUM(Amount) AS TotalAmount
+FROM (
+    SELECT 'Kigali' AS Branch, l.Amount 
+    FROM branch_kigali.LoanAccount l
+    UNION ALL
+    SELECT 'Musanze' AS Branch, l.Amount 
+    FROM branch_musanze.LoanAccount l
+) AS all_loans
+GROUP BY Branch;
+
+-- ============================================================================
+-- PERFORMANCE COMPARISON REPORT
+-- ============================================================================
+
+SELECT 
+    QueryName,
+    MAX(CASE WHEN ExecutionMode = 'Centralized' THEN ExecutionTime_MS END) AS Centralized_MS,
+    MAX(CASE WHEN ExecutionMode = 'Parallel' THEN ExecutionTime_MS END) AS Parallel_MS,
+    MAX(CASE WHEN ExecutionMode = 'Distributed' THEN ExecutionTime_MS END) AS Distributed_MS,
+    ROUND(
+        (MAX(CASE WHEN ExecutionMode = 'Centralized' THEN ExecutionTime_MS END) - 
+         MAX(CASE WHEN ExecutionMode = 'Parallel' THEN ExecutionTime_MS END)) /
+        NULLIF(MAX(CASE WHEN ExecutionMode = 'Centralized' THEN ExecutionTime_MS END), 0) * 100,
+        2
+    ) AS Parallel_Improvement_Pct,
+    ROUND(
+        (MAX(CASE WHEN ExecutionMode = 'Centralized' THEN ExecutionTime_MS END) - 
+         MAX(CASE WHEN ExecutionMode = 'Distributed' THEN ExecutionTime_MS END)) /
+        NULLIF(MAX(CASE WHEN ExecutionMode = 'Centralized' THEN ExecutionTime_MS END), 0) * 100,
+        2
+    ) AS Distributed_Improvement_Pct
+FROM public.performance_benchmark
+WHERE QueryName = 'Simple Aggregation'
+GROUP BY QueryName;
+
+-- ============================================================================
+-- END OF SIMPLE AGGREGATION BENCHMARK
+-- ============================================================================
+--000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+
+-- Distributed with SQL-based timing
+SET max_parallel_workers_per_gather = 0;
+
+DO $$
+DECLARE
+    start_time TIMESTAMP;
+    end_time TIMESTAMP;
+    execution_time_ms DECIMAL(10, 2);
+BEGIN
+    start_time := clock_timestamp();
+    
+    PERFORM Branch, COUNT(*), SUM(Amount) 
+    FROM (
+        SELECT 'Kigali' AS Branch, Amount FROM branch_kigali.LoanAccount
+        UNION ALL
+        SELECT 'Musanze' AS Branch, Amount FROM branch_musanze.LoanAccount
+    ) AS all_loans
+    GROUP BY Branch;
+    
+    end_time := clock_timestamp();
+    execution_time_ms := EXTRACT(EPOCH FROM (end_time - start_time)) * 1000;
+    
+    INSERT INTO public.performance_benchmark 
+    (QueryName, ExecutionMode, ExecutionTime_MS, ParallelWorkers, Notes)
+    VALUES 
+    ('Simple Aggregation', 'Distributed', execution_time_ms, 0, 'Distributed GROUP BY query');
+    
+    RAISE NOTICE 'Distributed Simple Aggregation: % ms', execution_time_ms;
+END $$;
+
 EXPLAIN (ANALYZE, BUFFERS)
 SELECT Branch, COUNT(*), SUM(Amount) FROM (
     SELECT 'Kigali' AS Branch, Amount FROM branch_kigali.LoanAccount
@@ -371,7 +891,6 @@ SELECT Branch, COUNT(*), SUM(Amount) FROM (
     SELECT 'Musanze' AS Branch, Amount FROM branch_musanze.LoanAccount
 ) AS all_loans
 GROUP BY Branch;
-\timing off
 
 -- ============================================================================
 -- STEP 5: Generate performance comparison report
@@ -386,13 +905,13 @@ SELECT
     ROUND(
         (MAX(CASE WHEN ExecutionMode = 'Centralized' THEN ExecutionTime_MS END) - 
          MAX(CASE WHEN ExecutionMode = 'Parallel' THEN ExecutionTime_MS END)) /
-        MAX(CASE WHEN ExecutionMode = 'Centralized' THEN ExecutionTime_MS END) * 100,
+        NULLIF(MAX(CASE WHEN ExecutionMode = 'Centralized' THEN ExecutionTime_MS END), 0) * 100,
         2
     ) AS Parallel_Improvement_Pct,
     ROUND(
         (MAX(CASE WHEN ExecutionMode = 'Centralized' THEN ExecutionTime_MS END) - 
          MAX(CASE WHEN ExecutionMode = 'Distributed' THEN ExecutionTime_MS END)) /
-        MAX(CASE WHEN ExecutionMode = 'Centralized' THEN ExecutionTime_MS END) * 100,
+        NULLIF(MAX(CASE WHEN ExecutionMode = 'Centralized' THEN ExecutionTime_MS END), 0) * 100,
         2
     ) AS Distributed_Improvement_Pct
 FROM public.performance_benchmark
